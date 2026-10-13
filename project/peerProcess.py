@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 from socket import *
 from dataclasses import dataclass
-import math, threading, time
+import math, threading, time, sys
 
 # I am going to make a Peer class incase I want helper functions later
 @dataclass
@@ -13,11 +13,17 @@ class Peer:
 # Create lock for log file
 log_lock = threading.Lock()
 
+# Log formatting Helpers
 def log(f, msg):
     with log_lock:
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: {msg}\n")
         f.flush()
-
+def log_conn_to(f, myID, theirID):
+    msg = "Peer " + str(myID) + " makes a connection to Peer " + str(theirID) + "."
+    log(f, msg)
+def log_conn_from(f, myID, theirID):
+    msg = "Peer " + str(myID) + " is connected from Peer " + str(theirID) +"."
+    log(f, msg)
 # helper function to fetch specific number of bytes (n) from socket
 def recv_exact(sock, n: int):
     buf = b""
@@ -64,37 +70,27 @@ def parse_peerinfo():
     
     return peers
 
+# Determine which peer process is being run from the command line arg
+try:
+    myPeerID: int = int(sys.argv[1])
+except:
+    print("Invalid peerID")
+    sys.exit()
+print("Peer ID: " + str(myPeerID))
+
+
+# Parse Cfg
 cfg = parse_common()
-print(cfg)
+#print(cfg)
 peers = parse_peerinfo()
-print(peers)
+#print(peers)
 
-serverPort = 12000
-serverSocket = socket(AF_INET,SOCK_STREAM)
+# Create log file
+logFilePath = "./log_peer_" + str(myPeerID) + ".log"
+logFile = open(logFilePath, "w")
 
-# .listen(1) mean max 1 queued connection
-serverSocket.bind(('',serverPort))
-serverSocket.listen(1)
-print('The server is ready to receive')
+# Test log
+log_conn_to(logFile, myPeerID, 1002)
+log_conn_from(logFile, myPeerID, 1002)
 
-serverName = 'localhost'
-serverPort = 12000
-clientSocket = socket(AF_INET, SOCK_STREAM)
-# SOCK_STREAM = TCP
-
-clientSocket.connect((serverName,serverPort))
-connectionSocket, addr = serverSocket.accept()
-
-print("sending data...")
-clientSocket.send("12345".encode())
-clientSocket.send("6789!".encode())
-
-sentence = recv_exact(connectionSocket, 10)
-connectionSocket.send(sentence)
-connectionSocket.close()
-
-
-modifiedSentence = clientSocket.recv(1024)
-print('From Server: ', modifiedSentence.decode())
-clientSocket.close()
 
