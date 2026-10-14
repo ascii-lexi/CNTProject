@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 from socket import *
 from dataclasses import dataclass
-import math, threading, time, sys
+import math, threading, time, sys, struct
 
 # I am going to make a Peer class incase I want helper functions later
 @dataclass
@@ -70,6 +70,16 @@ def parse_peerinfo():
     
     return peers
 
+# Handshake Formatting
+header = b"P2PFILESHARINGPROJ"
+def pack_handshake(myPeerID):
+    return header + b"\x00" * 10 + struct.pack(">I", myPeerID)
+def parse_handshake(handshake):
+    header = handshake[:18]
+    peerID = struct.unpack(">I", handshake[28:32])[0]
+    return header, peerID
+
+
 # Determine which peer process is being run from the command line arg
 try:
     myPeerID: int = int(sys.argv[1])
@@ -83,14 +93,67 @@ print("Peer ID: " + str(myPeerID))
 cfg = parse_common()
 #print(cfg)
 peers = parse_peerinfo()
-#print(peers)
+print(peers)
 
-# Create log file
+# Create log file object
 logFilePath = "./log_peer_" + str(myPeerID) + ".log"
 logFile = open(logFilePath, "w")
 
-# Test log
-log_conn_to(logFile, myPeerID, 1002)
-log_conn_from(logFile, myPeerID, 1002)
+# Make Peer lists for before and after my ID
+peers_before = []
+peers_after = []
+my_peer: Peer
+for peer in peers:
+    if(peer.id < myPeerID):
+        peers_before.append(peer)
+    elif(peer.id == myPeerID):
+        my_peer = peer
+    else:
+        peers_after.append(peer)
+
+# Bind + listen for TCP knocks
+socket_connections = {}
+listen_socket = socket(AF_INET, SOCK_STREAM)
+listen_socket.bind(('', my_peer.port))
+listen_socket.listen()
+
+# For peers before me:
+#   connect, send pack_handshake(), parse_handshake(recv_exact(32)), verify, log "makes a connection", add socket to socket_connections
+for peer in peers_before:
+    peerSock = socket(AF_INET, SOCK_STREAM)
+    print("Connecting to (host, sock)" + peer.host + " " + str(peer.port))
+    peerSock.connect((peer.host, peer.port))
+
+    peerSock.sendall(pack_handshake(myPeerID))
+    header, theirPeerID = parse_handshake(recv_exact(peerSock,32))
+    
+    # Verify
+    notValid = True
+    for peer in peers_before:
+        if(peer.id == theirPeerID):
+            notValid = False
+    if(notValid):
+        print("Invalid connection to " + str(theirPeerID))
+        sys.exit()
+
+    log_conn_to(logFile, myPeerID, theirPeerID)
+    socket_connections[theirPeerID] = peerSock
 
 
+# For peers after me:
+#   conn, addr = srv.accept(), send pack_handshake(), parse_handshake(recv_exact(32)), log "is connected from"
+for i in range(len(peers_after)):
+    peerSock, peerAddress = listen_socket.accept()
+    peerHN, peerPort = peerAddress
+    peerSock.sendall(pack_handshake(myPeerID))
+    header, theirPeerID = parse_handshake(recv_exact(peerSock,32))
+    # Verify
+    notValid = True
+    for peer in peers_after:
+        if(peer.id == theirPeerID):
+            notValid = False
+    if(notValid):
+        print("Invalid connection from " + str(theirPeerID))
+        sys.exit()
+    log_conn_from(logFile, myPeerID, theirPeerID)
+    socket_connections[theirPeerID] = peerSock
