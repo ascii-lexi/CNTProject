@@ -79,7 +79,14 @@ def parse_handshake(handshake):
     peerID = struct.unpack(">I", handshake[28:32])[0]
     return header, peerID
 
+# Message Helpers
+def send_message(sock, type, payload=b""):
+    sock.sendall(struct.pack(">IB", 1 + len(payload), type) + payload)
 
+def read_message(sock):
+    length = struct.unpack(">I", recv_exact(sock,4))[0]
+    body = recv_exact(sock, length)
+    return body[0], body[1:]
 # Determine which peer process is being run from the command line arg
 try:
     myPeerID: int = int(sys.argv[1])
@@ -93,7 +100,7 @@ print("Peer ID: " + str(myPeerID))
 cfg = parse_common()
 #print(cfg)
 peers = parse_peerinfo()
-print(peers)
+#print(peers)
 
 # Create log file object
 logFilePath = "./log_peer_" + str(myPeerID) + ".log"
@@ -125,12 +132,12 @@ for peer in peers_before:
     peerSock.connect((peer.host, peer.port))
 
     peerSock.sendall(pack_handshake(myPeerID))
-    header, theirPeerID = parse_handshake(recv_exact(peerSock,32))
+    theirHeader, theirPeerID = parse_handshake(recv_exact(peerSock,32))
     
     # Verify
     notValid = True
     for peer in peers_before:
-        if(peer.id == theirPeerID):
+        if(peer.id == theirPeerID and theirHeader == header):
             notValid = False
     if(notValid):
         print("Invalid connection to " + str(theirPeerID))
@@ -140,20 +147,23 @@ for peer in peers_before:
     socket_connections[theirPeerID] = peerSock
 
 
+
+
 # For peers after me:
 #   conn, addr = srv.accept(), send pack_handshake(), parse_handshake(recv_exact(32)), log "is connected from"
 for i in range(len(peers_after)):
     peerSock, peerAddress = listen_socket.accept()
     peerHN, peerPort = peerAddress
     peerSock.sendall(pack_handshake(myPeerID))
-    header, theirPeerID = parse_handshake(recv_exact(peerSock,32))
+    theirHeader, theirPeerID = parse_handshake(recv_exact(peerSock,32))
     # Verify
     notValid = True
     for peer in peers_after:
-        if(peer.id == theirPeerID):
+        if(peer.id == theirPeerID and theirHeader == header):
             notValid = False
     if(notValid):
         print("Invalid connection from " + str(theirPeerID))
         sys.exit()
     log_conn_from(logFile, myPeerID, theirPeerID)
     socket_connections[theirPeerID] = peerSock
+   
