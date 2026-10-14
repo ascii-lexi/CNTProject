@@ -104,7 +104,7 @@ def parse_peerinfo():
             if not line:
                 continue
             peerID, hostname, listening_port, hasFile = line.split()
-            peers.append(Peer(int(peerID), hostname, int(listening_port), hasFile == 1))
+            peers.append(Peer(int(peerID), hostname, int(listening_port), int(hasFile) == 1))
     
     return peers
 
@@ -118,8 +118,8 @@ def parse_handshake(handshake):
     return header, peerID
 
 # Message Helpers
-def send_message(sock, type, payload=b""):
-    sock.sendall(struct.pack(">IB", 1 + len(payload), type) + payload)
+def send_message(sock, type: int, payload=b""):
+    sock.sendall(struct.pack(">IB", 1 + len(payload), type.value) + payload)
 
 #Bitfield Helpers
 def read_message(sock):
@@ -157,14 +157,14 @@ def handle_connection(peer):
     try:
         while True:
             mtype, payload = read_message(peer.sock)
-            if   mtype == MsgType.BITFIELD:        on_bitfield(peer, payload)
-            elif mtype == MsgType.INTERESTED:      on_interested(peer)
-            elif mtype == MsgType.NOTINTERESTED:   on_not_interested(peer)
-            elif mtype == MsgType.HAVE:            on_have(peer, payload)
-            elif mtype == MsgType.CHOKE:           on_choke(peer)
-            elif mtype == MsgType.UNCHOKE:         on_unchoke(peer)
-            elif mtype == MsgType.REQUEST:         on_request(peer, payload)
-            elif mtype == MsgType.PIECE:           on_piece(peer, payload)
+            if   mtype == MsgType.BITFIELD.value:        on_bitfield(peer, payload)
+            elif mtype == MsgType.INTERESTED.value:      on_interested(peer)
+            elif mtype == MsgType.NOTINTERESTED.value:   on_not_interested(peer)
+            #elif mtype == MsgType.HAVE.value            on_have(peer, payload)
+            #elif mtype == MsgType.CHOKE.value:           on_choke(peer)
+            #elif mtype == MsgType.UNCHOKE.value:         on_unchoke(peer)
+            #elif mtype == MsgType.REQUEST.value:         on_request(peer, payload)
+            #elif mtype == MsgType.PIECE.value:           on_piece(peer, payload)
     except ConnectionError:
         pass                                # remote closed; thread exits
 
@@ -173,20 +173,19 @@ def on_bitfield(peer, payload):
     with state_lock:
         #peer.bitfield = Bitfield.from_bytes(payload, num_pieces)
         peer.bitfield = bytearray(payload)
-        interested = my_bitfield.has_interesting(peer.bitfield)
+        interested = has_interesting(my_bitfield, peer.bitfield)
         peer.i_am_interested = interested
+        print("I am " + str(interested) + " interested in " + str(peer.id))
     if (interested):
         send_message(peer.sock, MsgType.INTERESTED)
     else:
         send_message(peer.sock, MsgType.NOTINTERESTED)
-
 def on_interested(peer):
     with state_lock: peer.they_interested = True
-    log_received_interested(peer.pid)        # "Peer X received the 'interested' message from Y."
-
+    log_received_interested(logFile,myPeerID,peer.id)        # "Peer X received the 'interested' message from Y."
 def on_not_interested(peer):
     with state_lock: peer.they_interested = False
-    log_received_not_interested(peer.pid)
+    log_received_not_interested(logFile, myPeerID, peer.id)
 
 
 # Determine which peer process is being run from the command line arg
@@ -195,7 +194,7 @@ try:
 except:
     print("Invalid peerID")
     sys.exit()
-print("Peer ID: " + str(myPeerID))
+print("My Peer ID: " + str(myPeerID))
 
 
 # Parse Cfg
@@ -204,18 +203,11 @@ cfg = parse_common()
 peers = parse_peerinfo()
 #print(peers)
 
-# Create bitfield
-my_bitfield = make_bitfield(cfg["NumPieces"] ,peers[myPeerID].hasFile)
-
-
-# Create log file object
-logFilePath = "./log_peer_" + str(myPeerID) + ".log"
-logFile = open(logFilePath, "w")
-
 # Make Peer lists for before and after my ID
 peers_before = []
 peers_after = []
 my_peer: Peer
+
 for peer in peers:
     if(peer.id < myPeerID):
         peers_before.append(peer)
@@ -223,10 +215,23 @@ for peer in peers:
         my_peer = peer
     else:
         peers_after.append(peer)
+peers = peers_before + peers_after
+
+# Create bitfield
+#print("I have file: " + str(my_peer.hasFile))
+my_bitfield = make_bitfield(cfg["NumPieces"] ,my_peer.hasFile)
+
+
+# Create log file object
+logFilePath = "./log_peer_" + str(myPeerID) + ".log"
+logFile = open(logFilePath, "w")
+
+
 
 # Bind + listen for TCP knocks
 socket_connections = {}
 listen_socket = socket(AF_INET, SOCK_STREAM)
+listen_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
 listen_socket.bind(('', my_peer.port))
 listen_socket.listen()
 
@@ -234,7 +239,6 @@ listen_socket.listen()
 #   connect, send pack_handshake(), parse_handshake(recv_exact(32)), verify, log "makes a connection", add socket to socket_connections
 for peer in peers_before:
     peerSock = socket(AF_INET, SOCK_STREAM)
-    print("Connecting to (host, sock)" + peer.host + " " + str(peer.port))
     peerSock.connect((peer.host, peer.port))
 
     peerSock.sendall(pack_handshake(myPeerID))
@@ -252,11 +256,6 @@ for peer in peers_before:
     log_conn_to(logFile, myPeerID, theirPeerID)
     socket_connections[theirPeerID] = peerSock
     
-    if(my_bitfield.count() > 0):
-        send_message(peerSock, MsgType.BITFIELD, bytes(my_bitfield))
-
-
-
 
 # For peers after me:
 #   conn, addr = srv.accept(), send pack_handshake(), parse_handshake(recv_exact(32)), log "is connected from"
@@ -276,13 +275,21 @@ for i in range(len(peers_after)):
     log_conn_from(logFile, myPeerID, theirPeerID)
     socket_connections[theirPeerID] = peerSock
 
+#print(socket_connections)
+# Add socket_connections to each peer obj
+for peer in peers:
+    #print(peer.id)
+    peer.sock = socket_connections[peer.id]
+
+# Send bitfield if non-zero
+for peer in peers:
+    #print(my_bitfield)
+    if(count_pieces(my_bitfield) > 0):
+        send_message(peer.sock, MsgType.BITFIELD, bytes(my_bitfield))
+
 # Start connection handler for each peer (excluding this peer)
 for peer in peers:
-    if(peer.ID == myPeerID):
-        pass
-    else:
-        threading.Thread(target=handle_connection, args=(peer,), daemon=True).start()
-
+    threading.Thread(target=handle_connection, args=(peer,), daemon=True).start()
 
 # This keeps our background handler threads running until we implement shutdown logic   
 while True:
