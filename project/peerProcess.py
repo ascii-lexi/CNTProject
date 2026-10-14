@@ -1,7 +1,21 @@
 #!/usr/bin/python3
 from socket import *
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
+from enum import Enum
 import math, threading, time, sys, struct
+
+#Message Type Enum
+class MsgType(Enum):
+    CHOKE = 0
+    UNCHOKE = 1
+    INTERESTED = 2
+    NOTINTERESTED = 3
+    HAVE = 4
+    BITFIELD = 5
+    REQUEST = 6
+    PIECE = 7
+
 
 # I am going to make a Peer class incase I want helper functions later
 @dataclass
@@ -10,9 +24,26 @@ class Peer:
     host: str
     port: int
     hasFile: bool
-# Create lock for log file
-log_lock = threading.Lock()
 
+    # connection state, filled in once connected
+    sock: Optional[socket.socket] = field(default=None, repr=False)
+
+    # We need default_factory because we need seperate locks for each peer
+    send_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    # their pieces; set to make_bitfield(num_pieces) after the config is read
+    bitfield: Optional[bytearray] = field(default=None, repr=False)
+
+    # protocol state
+    they_choke_me: bool = True        # we start out choked
+    i_choke_them: bool = True
+    they_interested: bool = False
+    i_am_interested: bool = False
+    outstanding: Optional[int] = None # piece index I've requested from them, if any
+
+# Create locks
+log_lock = threading.Lock()
+state_lock = threading.Lock()
 # Log formatting Helpers
 def log(f, msg):
     with log_lock:
@@ -24,6 +55,13 @@ def log_conn_to(f, myID, theirID):
 def log_conn_from(f, myID, theirID):
     msg = "Peer " + str(myID) + " is connected from Peer " + str(theirID) +"."
     log(f, msg)
+def log_received_interested(f, myID, theirID):
+    msg = "Peer " + str(myID) + " received the 'interested' message from " + str(theirID) + "."
+    log(f,msg)
+def log_received_not_interested(f, myID, theirID):
+    msg = "Peer " + str(myID) + " received the 'not interested' message from " + str(theirID) + "."
+    log(f,msg)
+
 # helper function to fetch specific number of bytes (n) from socket
 def recv_exact(sock, n: int):
     buf = b""
@@ -83,10 +121,74 @@ def parse_handshake(handshake):
 def send_message(sock, type, payload=b""):
     sock.sendall(struct.pack(">IB", 1 + len(payload), type) + payload)
 
+#Bitfield Helpers
 def read_message(sock):
     length = struct.unpack(">I", recv_exact(sock,4))[0]
     body = recv_exact(sock, length)
     return body[0], body[1:]
+
+def make_bitfield(num_pieces, full=False):
+    bf = bytearray((num_pieces + 7) // 8)       # round up: 10 pieces -> 2 bytes, all zero
+    if full:
+        for i in range(num_pieces):
+            set_piece(bf, i)                    # set one by one so spare bits stay 0
+    return bf
+
+def has_piece(bf, i):
+    mask = 0b10000000 >> (i % 8)
+    return (bf[i // 8] & mask) != 0
+
+def set_piece(bf, i):
+    mask = 0b10000000 >> (i % 8)
+    bf[i // 8] |= mask                          # modifies bf in place
+
+def count_pieces(bf):
+    return sum(bin(byte).count("1") for byte in bf)   # count the 1-bits in each byte
+
+def is_complete(bf, num_pieces):
+    return count_pieces(bf) == num_pieces
+
+def has_interesting(mine, theirs):
+    # True if `theirs` has at least one piece that `mine` lacks
+    return any(t & ~m for m, t in zip(mine, theirs))
+
+# Connection handler
+def handle_connection(peer):
+    try:
+        while True:
+            mtype, payload = read_message(peer.sock)
+            if   mtype == MsgType.BITFIELD:        on_bitfield(peer, payload)
+            elif mtype == MsgType.INTERESTED:      on_interested(peer)
+            elif mtype == MsgType.NOTINTERESTED:   on_not_interested(peer)
+            elif mtype == MsgType.HAVE:            on_have(peer, payload)
+            elif mtype == MsgType.CHOKE:           on_choke(peer)
+            elif mtype == MsgType.UNCHOKE:         on_unchoke(peer)
+            elif mtype == MsgType.REQUEST:         on_request(peer, payload)
+            elif mtype == MsgType.PIECE:           on_piece(peer, payload)
+    except ConnectionError:
+        pass                                # remote closed; thread exits
+
+# Interest Handeling
+def on_bitfield(peer, payload):
+    with state_lock:
+        #peer.bitfield = Bitfield.from_bytes(payload, num_pieces)
+        peer.bitfield = bytearray(payload)
+        interested = my_bitfield.has_interesting(peer.bitfield)
+        peer.i_am_interested = interested
+    if (interested):
+        send_message(peer.sock, MsgType.INTERESTED)
+    else:
+        send_message(peer.sock, MsgType.NOTINTERESTED)
+
+def on_interested(peer):
+    with state_lock: peer.they_interested = True
+    log_received_interested(peer.pid)        # "Peer X received the 'interested' message from Y."
+
+def on_not_interested(peer):
+    with state_lock: peer.they_interested = False
+    log_received_not_interested(peer.pid)
+
+
 # Determine which peer process is being run from the command line arg
 try:
     myPeerID: int = int(sys.argv[1])
@@ -101,6 +203,10 @@ cfg = parse_common()
 #print(cfg)
 peers = parse_peerinfo()
 #print(peers)
+
+# Create bitfield
+my_bitfield = make_bitfield(cfg["NumPieces"] ,peers[myPeerID].hasFile)
+
 
 # Create log file object
 logFilePath = "./log_peer_" + str(myPeerID) + ".log"
@@ -145,6 +251,9 @@ for peer in peers_before:
 
     log_conn_to(logFile, myPeerID, theirPeerID)
     socket_connections[theirPeerID] = peerSock
+    
+    if(my_bitfield.count() > 0):
+        send_message(peerSock, MsgType.BITFIELD, bytes(my_bitfield))
 
 
 
@@ -166,4 +275,15 @@ for i in range(len(peers_after)):
         sys.exit()
     log_conn_from(logFile, myPeerID, theirPeerID)
     socket_connections[theirPeerID] = peerSock
-   
+
+# Start connection handler for each peer (excluding this peer)
+for peer in peers:
+    if(peer.ID == myPeerID):
+        pass
+    else:
+        threading.Thread(target=handle_connection, args=(peer,), daemon=True).start()
+
+
+# This keeps our background handler threads running until we implement shutdown logic   
+while True:
+    time.sleep(1)
