@@ -118,8 +118,10 @@ def parse_handshake(handshake):
     return header, peerID
 
 # Message Helpers
-def send_message(sock, type: int, payload=b""):
-    sock.sendall(struct.pack(">IB", 1 + len(payload), type.value) + payload)
+def send_message(peer, type: int, payload=b""):
+    msg = struct.pack(">IB", 1 + len(payload), type.value) + payload
+    with peer.send_lock:
+        peer.sock.sendall(msg)
 
 #Bitfield Helpers
 def read_message(sock):
@@ -177,9 +179,9 @@ def on_bitfield(peer, payload):
         peer.i_am_interested = interested
         print("I am " + str(interested) + " interested in " + str(peer.id))
     if (interested):
-        send_message(peer.sock, MsgType.INTERESTED)
+        send_message(peer, MsgType.INTERESTED)
     else:
-        send_message(peer.sock, MsgType.NOTINTERESTED)
+        send_message(peer, MsgType.NOTINTERESTED)
 def on_interested(peer):
     with state_lock: peer.they_interested = True
     log_received_interested(logFile,myPeerID,peer.id)        # "Peer X received the 'interested' message from Y."
@@ -285,7 +287,7 @@ for peer in peers:
 for peer in peers:
     #print(my_bitfield)
     if(count_pieces(my_bitfield) > 0):
-        send_message(peer.sock, MsgType.BITFIELD, bytes(my_bitfield))
+        send_message(peer, MsgType.BITFIELD, bytes(my_bitfield))
 
 # Start connection handler for each peer (excluding this peer)
 for peer in peers:
