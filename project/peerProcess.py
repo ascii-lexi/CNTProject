@@ -72,7 +72,7 @@ def log_downloaded(f, myID, theirID, index, totalCount):
     msg = "Peer " + str(myID) + " has downloaded the piece " + str(index) + " from " + str(theirID) + ". Now the number of pieces it has is " + str(totalCount)
     log(f, msg)
 def log_have_from(f, myID, theirID, index):
-    msg = "Peer " + str(myID) + " received the 'have' message from " +  + str(theirID) + " for the piece " + str(index)
+    msg = "Peer " + str(myID) + " received the 'have' message from " + str(theirID) + " for the piece " + str(index)
     log(f, msg)
 # helper function to fetch specific number of bytes (n) from socket
 def recv_exact(sock, n: int):
@@ -176,8 +176,7 @@ def has_interesting(mine, theirs):
 
 def pick_piece(peer):
     num_pieces = cfg["NumPieces"]
-    candidates = [i for i in range(num_pieces)
-                  if peer.bitfield.has(i) and not my_bitfield.has(i) and i not in requested]
+    candidates = [i for i in range(num_pieces) if has_piece(peer.bitfield,i) and not has_piece(my_bitfield,i) and i not in requested]
     return random.choice(candidates) if candidates else None
 
 # Connection handler
@@ -203,7 +202,6 @@ def on_bitfield(peer, payload):
         peer.bitfield = bytearray(payload)
         am_interested = has_interesting(my_bitfield, peer.bitfield)
         peer.i_am_interested = am_interested
-        print("I am " + str(am_interested) + " interested in " + str(peer.id))
     if (am_interested):
         send_message(peer, MsgType.INTERESTED)
     else:
@@ -214,7 +212,7 @@ def on_interested(peer):
 
     # TODO: replace with preferred/optimistic neighbor selection
     send_message(peer, MsgType.UNCHOKE)
-    my_peer.i_choke_them = False
+    peer.i_choke_them = False
 
 def on_not_interested(peer):
     with state_lock: peer.they_interested = False
@@ -227,7 +225,7 @@ def on_unchoke(peer):
         i = pick_piece(peer)
         if i is not None: requested.add(i)
     if i is not None:
-        send_message(peer.sock, MsgType.REQUEST, struct.pack(">I", i))
+        send_message(peer, MsgType.REQUEST, struct.pack(">I", i))
 
 def on_choke(peer):
     log_choked_by(peer.id)
@@ -242,7 +240,7 @@ def on_request(peer, payload):
     with state_lock:
         if peer.i_choke_them: return            # ignore requests from choked neighbors
         data = piece_index[i]
-    send_message(peer.sock, MsgType.PIECE, struct.pack(">I", i) + data)
+    send_message(peer, MsgType.PIECE, struct.pack(">I", i) + data)
 
 def on_piece(peer, payload):
     i = struct.unpack(">I", payload[:4])[0]
@@ -252,15 +250,16 @@ def on_piece(peer, payload):
         set_piece(my_bitfield, i)
         requested.discard(i)
         count = count_pieces(my_bitfield)
-        complete = is_complete(my_bitfield)
+        complete = is_complete(my_bitfield, cfg["NumPieces"])
     log_downloaded(logFile, myPeerID, peer.id, i, count)
     # next steps: broadcast `have`, update interest, request again
     for broadcastPeer in peers:
         send_message(broadcastPeer, MsgType.HAVE, struct.pack(">I",i))
-        if (not has_interesting(my_peer.bitfield,peer.bitfield) and broadcastPeer.i_am_interested):
+        print("My Bitfield: " + str(my_bitfield) + "\nTheir Bitfield (peer "+ str(broadcastPeer.id)+ "): " + str(broadcastPeer.bitfield))
+        if (not has_interesting(my_bitfield,broadcastPeer.bitfield) and broadcastPeer.i_am_interested):
             send_message(broadcastPeer, MsgType.NOTINTERESTED)
             broadcastPeer.i_am_interested = False
-    if not peer.they_choke_me:
+    if not peer.they_choke_me and pick_piece(peer) is not None:
         send_message(peer, MsgType.REQUEST, struct.pack(">I", pick_piece(peer)))
 
 def on_have(peer, payload):
@@ -270,7 +269,7 @@ def on_have(peer, payload):
     am_interested = has_interesting(my_peer.bitfield, peer.bitfield)
     if am_interested:
         peer.i_am_interested = True
-        send_message(peer, MsgType.INTERESTED, struct.pack(">I", payload))
+        send_message(peer, MsgType.INTERESTED, struct.pack(">I", index))
 # Determine which peer process is being run from the command line arg
 try:
     myPeerID: int = int(sys.argv[1])
@@ -292,6 +291,7 @@ peers_after = []
 my_peer: Peer
 
 for peer in peers:
+    peer.bitfield = make_bitfield(cfg["NumPieces"])
     if(peer.id < myPeerID):
         peers_before.append(peer)
     elif(peer.id == myPeerID):
