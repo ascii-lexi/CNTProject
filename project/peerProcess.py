@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+from sys import byteorder
 from socket import *
 from dataclasses import dataclass, field
 from typing import Optional
@@ -70,7 +71,9 @@ def log_choked_by(f, myID, theirID):
 def log_downloaded(f, myID, theirID, index, totalCount):
     msg = "Peer " + str(myID) + " has downloaded the piece " + str(index) + " from " + str(theirID) + ". Now the number of pieces it has is " + str(totalCount)
     log(f, msg)
-
+def log_have_from(f, myID, theirID, index):
+    msg = "Peer " + str(myID) + " received the 'have' message from " +  + str(theirID) + " for the piece " + str(index)
+    log(f, msg)
 # helper function to fetch specific number of bytes (n) from socket
 def recv_exact(sock, n: int):
     buf = b""
@@ -185,7 +188,7 @@ def handle_connection(peer):
             if   mtype == MsgType.BITFIELD.value:        on_bitfield(peer, payload)
             elif mtype == MsgType.INTERESTED.value:      on_interested(peer)
             elif mtype == MsgType.NOTINTERESTED.value:   on_not_interested(peer)
-            #elif mtype == MsgType.HAVE.value            on_have(peer, payload)
+            elif mtype == MsgType.HAVE.value:            on_have(peer, payload)
             elif mtype == MsgType.CHOKE.value:           on_choke(peer)
             elif mtype == MsgType.UNCHOKE.value:         on_unchoke(peer)
             elif mtype == MsgType.REQUEST.value:         on_request(peer, payload)
@@ -251,10 +254,23 @@ def on_piece(peer, payload):
         count = count_pieces(my_bitfield)
         complete = is_complete(my_bitfield)
     log_downloaded(logFile, myPeerID, peer.id, i, count)
-    # TODO: next steps: broadcast `have`, update interest, request again
+    # next steps: broadcast `have`, update interest, request again
+    for broadcastPeer in peers:
+        send_message(broadcastPeer, MsgType.HAVE, struct.pack(">I",i))
+        if (not has_interesting(my_peer.bitfield,peer.bitfield) and broadcastPeer.i_am_interested):
+            send_message(broadcastPeer, MsgType.NOTINTERESTED)
+            broadcastPeer.i_am_interested = False
+    if not peer.they_choke_me:
+        send_message(peer, MsgType.REQUEST, struct.pack(">I", pick_piece(peer)))
 
-
-
+def on_have(peer, payload):
+    index = struct.unpack(">I",payload)[0]
+    set_piece(peer.bitfield, index)
+    log_have_from(logFile, myPeerID, peer.id, index)
+    am_interested = has_interesting(my_peer.bitfield, peer.bitfield)
+    if am_interested:
+        peer.i_am_interested = True
+        send_message(peer, MsgType.INTERESTED, struct.pack(">I", payload))
 # Determine which peer process is being run from the command line arg
 try:
     myPeerID: int = int(sys.argv[1])
