@@ -19,6 +19,7 @@ class MsgType(Enum):
 
 
 # I am going to make a Peer class incase I want helper functions later
+# I regret not keeping this fully functional, this class is messy
 @dataclass
 class Peer:
     id: int
@@ -85,6 +86,7 @@ def recv_exact(sock, n: int):
         buf += chunk # append recieved chunk to buffer
     return buf
 
+#Cfg file parsers
 def parse_common():
     common_cfg_dict = {}
     filePath = "./Common.cfg"
@@ -150,7 +152,7 @@ def read_message(sock):
     return body[0], body[1:]
 
 def make_bitfield(num_pieces, full=False):
-    bf = bytearray((num_pieces + 7) // 8)       # round up: 10 pieces -> 2 bytes, all zero
+    bf = bytearray((num_pieces + 7) // 8)       # round up
     if full:
         for i in range(num_pieces):
             set_piece(bf, i)                    # set one by one so spare bits stay 0
@@ -171,7 +173,7 @@ def is_complete(bf, num_pieces):
     return count_pieces(bf) == num_pieces
 
 def has_interesting(mine, theirs):
-    # True if `theirs` has at least one piece that `mine` lacks
+    # True if 'theirs' has at least one piece that 'mine' lacks
     return any(t & ~m for m, t in zip(mine, theirs))
 
 def pick_piece(peer):
@@ -179,7 +181,7 @@ def pick_piece(peer):
     candidates = [i for i in range(num_pieces) if has_piece(peer.bitfield,i) and not has_piece(my_bitfield,i) and i not in requested]
     return random.choice(candidates) if candidates else None
 
-# Connection handler
+# Connection handler (thread target function)
 def handle_connection(peer):
     try:
         while True:
@@ -230,7 +232,7 @@ def on_unchoke(peer):
 def on_choke(peer):
     log_choked_by(peer.id)
     with state_lock: peer.they_choke_me = True
-    # any outstanding request will never be answered; remove it from `requested`
+    # any outstanding request will never be answered so remove it from `requested`
     if (peer.outstanding is not None):
         requested.remove(peer.outstanding)
         peer.outstanding = None
@@ -290,6 +292,7 @@ peers_before = []
 peers_after = []
 my_peer: Peer
 
+#split out this peer information while creating lists
 for peer in peers:
     peer.bitfield = make_bitfield(cfg["NumPieces"])
     if(peer.id < myPeerID):
